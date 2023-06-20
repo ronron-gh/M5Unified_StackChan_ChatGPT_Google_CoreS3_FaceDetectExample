@@ -79,6 +79,8 @@ static camera_config_t camera_config = {
     .grab_mode    = CAMERA_GRAB_WHEN_EMPTY,
 };
 
+bool isSubWindowON = true;
+
 #endif    //ENABLE_FACE_DETECT
 
 // Default LANG_CODE
@@ -251,7 +253,8 @@ String speech_text = "";
 String speech_text_buffer = "";
 //DynamicJsonDocument chat_doc(1024);
 DynamicJsonDocument chat_doc(1024*10);
-String json_ChatString = "{\"model\": \"gpt-3.5-turbo\",\"messages\": [{\"role\": \"user\", \"content\": \"""\"}]}";
+//String json_ChatString = "{\"model\": \"gpt-3.5-turbo\",\"messages\": [{\"role\": \"user\", \"content\": \"""\"}]}";
+String json_ChatString = "{\"model\": \"gpt-3.5-turbo-0613\",\"messages\": [{\"role\": \"user\", \"content\": \"""\"}]}";
 
 bool init_chat_doc(const char *data)
 {
@@ -845,6 +848,7 @@ struct box_t
 };
 static box_t box_servo;
 static box_t box_stt;
+static box_t box_subWindow;
 
 void Wifi_setup() {
   // 前回接続時情報で接続する
@@ -983,6 +987,19 @@ static void draw_face_boxes(fb_data_t *fb, std::list<dl::detect::result_t> *resu
 }
 
 
+void debug_check_heap_free_size(void){
+  Serial.printf("===============================================================\n");
+  Serial.printf("Mem Test\n");
+  Serial.printf("===============================================================\n");
+  Serial.printf("esp_get_free_heap_size()                              : %6d\n", esp_get_free_heap_size() );
+  Serial.printf("heap_caps_get_free_size(MALLOC_CAP_DMA)               : %6d\n", heap_caps_get_free_size(MALLOC_CAP_DMA) );
+  Serial.printf("heap_caps_get_free_size(MALLOC_CAP_SPIRAM)            : %6d\n", heap_caps_get_free_size(MALLOC_CAP_SPIRAM) );
+  Serial.printf("heap_caps_get_free_size(MALLOC_CAP_INTERNAL)          : %6d\n", heap_caps_get_free_size(MALLOC_CAP_INTERNAL) );
+  Serial.printf("heap_caps_get_free_size(MALLOC_CAP_DEFAULT)           : %6d\n", heap_caps_get_free_size(MALLOC_CAP_DEFAULT) );
+
+}
+
+
 bool camera_capture_and_face_detect(){
   bool isDetected = false;
 
@@ -1015,18 +1032,18 @@ bool camera_capture_and_face_detect(){
 
     isDetected = true;
 
-    if(servo_home){
-      fb_data_t rfb;
-      rfb.width = fb->width;
-      rfb.height = fb->height;
-      rfb.data = fb->buf;
-      rfb.bytes_per_pixel = 2;
-      rfb.format = FB_RGB565;
+    fb_data_t rfb;
+    rfb.width = fb->width;
+    rfb.height = fb->height;
+    rfb.data = fb->buf;
+    rfb.bytes_per_pixel = 2;
+    rfb.format = FB_RGB565;
 
-      draw_face_boxes(&rfb, &results, face_id);
-    }
+    draw_face_boxes(&rfb, &results, face_id);
+
   }
 
+#if 0
   if(servo_home){   //サーボ固定時（LCD中央をタップしたとき）のみ、LCDにカメラ画像を表示する
     M5.Display.startWrite();
     M5.Display.setAddrWindow(0, 0, fb->width, fb->height);
@@ -1034,15 +1051,20 @@ bool camera_capture_and_face_detect(){
     M5.Display.endWrite();
   
   }
+#endif
 
-  //Serial.println("<heap size before fb return>");  
-  //check_heap_free_size();
+  if(isSubWindowON){
+    avatar.updateSubWindow(fb->buf);
+  }
+
+  //Serial.println("\n<<< heap size before fb return >>>");  
+  //debug_check_heap_free_size();
 
   //return the frame buffer back to the driver for reuse
   esp_camera_fb_return(fb);
 
-  //Serial.println("<heap size after fb return>");  
-  //check_heap_free_size();
+  //Serial.println("<<< heap size after fb return >>>");  
+  //debug_check_heap_free_size();
 
   return isDetected;
 }
@@ -1269,16 +1291,26 @@ void setup()
   avatar.setColorPalette(*cp);
   avatar.init(8); //Color Depth8
 #else
-  avatar.init();
+  //avatar.init();
+  avatar.init(16);
 #endif
   avatar.addTask(lipSync, "lipSync");
   avatar.addTask(servo, "servo");
   avatar.setSpeechFont(&fonts::efontJA_16);
   box_servo.setupBox(80, 120, 80, 80);
+
+#if defined(ENABLE_FACE_DETECT)
+  box_stt.setupBox(107, 0, M5.Display.width()-107, 80);
+  box_subWindow.setupBox(0, 0, 107, 80);
+#else
   box_stt.setupBox(0, 0, M5.Display.width(), 60);
+#endif
 
 #if defined(ENABLE_FACE_DETECT)
   camera_init();
+  avatar.set_isSubWindowEnable(true);
+  //avatar.setBatteryIcon(true);
+  //avatar.setBatteryStatus(M5.Power.isCharging(), M5.Power.getBatteryLevel());
 #endif
 }
 
@@ -1497,13 +1529,17 @@ void loop()
   //しゃべっていないときに顔検出を実行し、顔が検出されれば音声認識を開始。
   if (!mp3->isRunning()) {
     if(camera_capture_and_face_detect()){
-      voice_recognition();
+
+      avatar.set_isSubWindowEnable(false);
+  
+      //voice_recognition();
+      exec_chatGPT(random_words[random(18)]);
 
       // フレームバッファを読み捨てる（ｽﾀｯｸﾁｬﾝが応答した後に、過去のフレームで顔検出してしまうのを防ぐため）
       M5.In_I2C.release();
       camera_fb_t *fb = esp_camera_fb_get();
       esp_camera_fb_return(fb);
-  
+
     }
   }
 #endif
@@ -1521,9 +1557,11 @@ void loop()
     {          
       if (box_stt.contain(t.x, t.y)&&(!mp3->isRunning()))
       {
-
+#if defined(ENABLE_FACE_DETECT)
+        avatar.set_isSubWindowEnable(false);
+#endif
         voice_recognition();
-
+        
       }
 #ifdef USE_SERVO
       if (box_servo.contain(t.x, t.y))
@@ -1531,14 +1569,27 @@ void loop()
         servo_home = !servo_home;
         M5.Speaker.tone(1000, 100);
 
+#if defined(ENABLE_FACE_DETECT)
+#if 0
         if(servo_home){
           avatar.stop();
         }
         else{
           avatar.start();
         }
+#endif
+#endif  //ENABLE_FACE_DETECT
+
       }
 #endif
+
+#if defined(ENABLE_FACE_DETECT)
+      if (box_subWindow.contain(t.x, t.y))
+      {
+        isSubWindowON = !isSubWindowON;
+        avatar.set_isSubWindowEnable(isSubWindowON);
+      }
+#endif //ENABLE_FACE_DETECT
     }
   }
 #endif
@@ -1636,6 +1687,13 @@ void loop()
       } else {
         avatar.setExpression(Expression::Neutral);
         expressionIndx = -1;
+
+#if defined(ENABLE_FACE_DETECT)
+        if(isSubWindowON){
+          avatar.set_isSubWindowEnable(true);
+        }
+#endif  //ENABLE_FACE_DETECT
+
       }
     }
   } else {
